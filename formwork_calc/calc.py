@@ -1,6 +1,18 @@
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+
+class SpecParseError(Exception):
+    def __init__(self, field_name: str, raw_value: str, hint: str = ""):
+        self.field_name = field_name
+        self.raw_value = raw_value
+        self.hint = hint
+        msg = f"字段 '{field_name}' 无法解析规格 '{raw_value}'"
+        if hint:
+            msg += f"（{hint}）"
+        super().__init__(msg)
 
 
 @dataclass
@@ -29,25 +41,52 @@ class MaterialParams:
     concrete_density_kN_m3: float = 25.0
 
 
+_TIMBER_SPLIT_RE = re.compile(r"[x×*X\u00d7]")
+_STEEL_PREFIX_RE = re.compile(r"^(?P<n>[1-9]\d*)?\s*(?P<phi>[ΦφϕФф\u03a6\u03c6\u03d5\u0424\u0444]|phi|PHI|Phi|直径|D|d)\s*")
+_STEEL_SPLIT_RE = re.compile(r"[x×*X\u00d7]")
+
+
 def _parse_timber_section(spec: str):
-    parts = spec.lower().replace("x", "×").split("×")
+    if spec is None:
+        raise SpecParseError("木方规格", "", "填写如 50x80、50×80、50X80 等格式")
+    s = str(spec).strip()
+    if not s:
+        raise SpecParseError("木方规格", spec, "填写如 50x80、50×80、50X80 等格式")
+    parts = [p.strip() for p in _TIMBER_SPLIT_RE.split(s) if p.strip()]
     if len(parts) != 2:
-        raise ValueError(f"无法解析木方规格 '{spec}'，期望格式如 '50x80'")
-    return float(parts[0]), float(parts[1])
+        raise SpecParseError("木方规格", spec, "期望格式 50x80 或 50×80（宽×高）")
+    try:
+        w = float(parts[0])
+        h = float(parts[1])
+    except ValueError:
+        raise SpecParseError("木方规格", spec, "尺寸必须是数值，如 50x80")
+    if w <= 0 or h <= 0:
+        raise SpecParseError("木方规格", spec, "尺寸必须大于 0")
+    return w, h
 
 
 def _parse_steel_tube_section(spec: str):
-    n = 1
-    s = spec.strip()
-    if s.startswith("2"):
-        n = 2
-        s = s[1:]
-    s = s.replace("Φ", "").replace("φ", "").replace("ϕ", "")
-    parts = s.split("x")
+    if spec is None:
+        raise SpecParseError("主楞规格", "", "填写如 2Φ48x3.5、Φ48X3.5、2phi48×3.5 等格式")
+    s = str(spec).strip()
+    if not s:
+        raise SpecParseError("主楞规格", spec, "填写如 2Φ48x3.5、Φ48X3.5、2phi48×3.5 等格式")
+    m = _STEEL_PREFIX_RE.match(s)
+    if not m:
+        raise SpecParseError("主楞规格", spec, "期望格式如 2Φ48x3.5（根数+Φ+外径×壁厚）")
+    n_str = m.group("n")
+    n = int(n_str) if n_str else 1
+    remainder = s[m.end():].strip()
+    parts = [p.strip() for p in _STEEL_SPLIT_RE.split(remainder) if p.strip()]
     if len(parts) != 2:
-        raise ValueError(f"无法解析主楞规格 '{spec}'，期望格式如 '2Φ48x3.5'")
-    od = float(parts[0])
-    wall = float(parts[1])
+        raise SpecParseError("主楞规格", spec, "期望格式如 2Φ48x3.5（根数+Φ+外径×壁厚）")
+    try:
+        od = float(parts[0])
+        wall = float(parts[1])
+    except ValueError:
+        raise SpecParseError("主楞规格", spec, "外径和壁厚必须是数值，如 48x3.5")
+    if od <= 0 or wall <= 0 or wall >= od / 2:
+        raise SpecParseError("主楞规格", spec, "外径和壁厚必须大于 0，且壁厚小于半外径")
     return n, od, wall
 
 
